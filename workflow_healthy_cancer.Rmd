@@ -1,0 +1,425 @@
+Library preparation.
+```{r,warning=FALSE,message=FALSE}
+library(reticulate)
+library(stringr)
+library(dplyr)
+library(tidyverse)
+library(devtools)
+library(ggbiplot)
+library(glmnet)
+library(RColorBrewer)
+library(cowplot)
+```
+
+First we need to read pickle files into R.
+```{r,warning=FALSE}
+source_python("R_read_pickle.py")
+setwd("/n/holyscratch01/stephenson_lab/Users/taylerli/SCENIC/data")
+dta <- read_pickle_file("BM_AML_normal_output/BM_AML_normal_aucell_values.pkl.gz")
+```
+
+Then, get the correct annotations of normal cells and place them alongside AUCell data.
+```{r}
+filenames = list.files(path = "/n/holyscratch01/stephenson_lab/Users/taylerli/SCENIC/data",
+                       full.names = T)
+filenames1 = filenames[str_detect(filenames, pattern = ".*GSM\\d*_BM.*\\.anno\\.txt\\.gz")]
+filenames1 = c(filenames1,
+               filenames[str_detect(filenames, pattern = ".*GSM\\d*_AML.*\\.anno\\.txt\\.gz")])
+filenames1 <- filenames1[c(1,2,3,4,5,6,7,8,9,10,12,13,14,11,15)]
+
+anno <- data.frame()
+for (i in 1:length(filenames1)) {
+    anno <- rbind(anno,
+                  read.csv(filenames1[i], header = T, row.names = 1, sep = '\t')[, 1:27])
+}
+anno <- anno[anno$CellType != "",] %>%
+    dplyr::select(CellType) %>%
+    mutate(HC = ifelse(str_sub(CellType, start = -4) == 'like', 'Cancer', 'Healthy')) %>%
+    mutate(HC = relevel(factor(HC), ref = 'Healthy'))
+
+dta <- cbind(anno, dta)
+```
+
+LASSO.
+```{r}
+dta_lasso <- dta[, -1] %>%
+    mutate(HC = as.numeric(HC) - 1)
+x <- model.matrix(HC ~ ., data = dta_lasso)
+y <- dta_lasso$HC
+
+set.seed(292876)
+lambda_grid <- .5 ^ (-20:20)
+lasso.mod = glmnet(x, y, alpha=1, family="binomial", lambda = lambda_grid)
+#par(mfrow=c(1,2))
+#plot(lasso.mod)
+cv.out <- cv.glmnet(x,y, alpha=1)
+#plot(cv.out)
+
+tab <- as.matrix(coef(cv.out, s="lambda.min"))
+tab <- tab[which(rowSums(tab)!=0), ][-1]
+col_names <- gsub('`', '', names(tab))
+
+t5 <- gsub('`', '', head(names(sort(tab, decreasing = T)), 5))
+l5 <- gsub('`', '', tail(names(sort(tab, decreasing = T)), 5))
+
+
+```
+
+Do a exploratory PCA with color coding for different cell types.
+```{r}
+colors <- c("HSC" = "black",
+            "Prog" = "gray65",
+            "GMP" = "darkorchid",
+            "ProMono" = "orangered2",
+            "Mono" = "gold1",
+            "cDC" = "green3",
+            "pDC" = "royalblue",
+            "earlyEry" = "sienna2",
+            "lateEry" = "violetred4",
+            "ProB" = "turquoise3",
+            "B" = "springgreen2",
+            "Plasma" = "seagreen",
+            "T" = "skyblue1",
+            "CTL" = "maroon3",
+            "NK" = "midnightblue"
+            )
+colors2 <- c("HSC" = "black",
+            "Prog" = "gray65",
+            "GMP" = "darkorchid",
+            "ProMono" = "orangered2",
+            "Mono" = "gold1",
+            "cDC" = "green3",
+            "pDC" = "royalblue",
+            "earlyEry" = "sienna2",
+            "lateEry" = "violetred4",
+            "ProB" = "turquoise3",
+            "B" = "springgreen2",
+            "Plasma" = "seagreen",
+            "T" = "skyblue1",
+            "CTL" = "maroon3",
+            "NK" = "midnightblue",
+            "HSC-like" = "black",
+            "Prog-like" = "gray65",
+            "GMP-like" = "darkorchid",
+            "ProMono-like" = "orangered2",
+            "Mono-like" = "gold1",
+            "cDC-like" = "green3"
+            )
+# dta.pca <- prcomp(dta[, 3:ncol(dta)],
+#                   center = T, 
+#                   scale. = T
+#            )
+# g <- ggbiplot(dta.pca,
+#               obs.scale = 1,
+#               var.scale = 1,
+#               groups = dta[, c("CellType", "HC")],
+#               #ellipse = TRUE,
+#               #circle = TRUE,
+#               #ellipse.prob = 0.68,
+#               var.axes = F,
+#               alpha = 0.7
+#      )
+# g + scale_colour_manual(name="Cell Type", values=colors)
+```
+
+Heatmap analysis.
+```{r}
+dta_heat_1 <- dta
+dta_heat_1$CellType <- factor(dta_heat_1$CellType, c("HSC", "Prog", "GMP", "ProMono", "Mono", "cDC",
+                                                     "pDC", "earlyEry", "lateEry", "ProB", "B", "Plasma",
+                                                     "T", "CTL", "NK", "HSC-like", "Prog-like", "GMP-like",
+                                                     "ProMono-like", "Mono-like", "cDC-like"))
+dta_heat_1 <- dta_heat_1[order(dta_heat_1$CellType), ]
+# col_order <- hclust(dist(t(dta_heat_1[, 2:ncol(dta_heat_1)])))$order
+# heatmap(as.matrix(sapply(dta_heat_1[, col_order], as.numeric)),
+#         Rowv = NA,
+#         Colv = NA,
+#         useRaster = T,
+#         scale = "n")
+heatmap(as.matrix(dta_heat_1[, 3:ncol(dta_heat_1)]), Rowv = NA, useRaster = T, scale = 'none')
+```
+```{r}
+dta_heat_3 <- dta_heat_1[13244: 20148, -2] %>%
+    mutate(CellType = factor(CellType, c("HSC-like", "Prog-like", "GMP-like", "ProMono-like", "Mono-like", "cDC-like")))
+# select the most variable regulons
+var_df = dta_heat_3[, -1] %>% 
+    dplyr::summarise(across(.cols = everything(), .fns = var)) %>% 
+    pivot_longer(cols = everything()) %>% 
+    slice_max(n = 100, order_by = value)
+dta_heat_2 <- dta_heat_3 %>% 
+    dplyr::select(c("CellType", var_df$name))
+mat <- t(as.matrix(dta_heat_2[, -1]))
+r_ord <- rev(hclust(dist(mat))$order)
+
+png('heatmap_c.png')
+heatmap(mat[r_ord, ],
+        Rowv = NA,
+        Colv = NA,
+        scale = 'none',
+        ColSideColors = as.character(`levels<-`(dta_heat_2$CellType, colors5)))
+dev.off()
+
+source("heatmap3.R")
+
+png(filename = "heatmap_hc.png")
+heatmap.3(mat[r_ord, ],
+        Rowv = NA,
+        Colv = NA,
+        scale = 'none',
+        ColSideColors = cbind(as.character(`levels<-`(dta_heat_1$CellType, colors2)),
+                              rep("white", 20148),
+                              c(rep("yellow", 13243), rep("lightblue", 6905))),
+        col=rev(heat.colors(75)),
+        key = F)
+dev.off()
+# cells on columns
+# ColSideColors
+# anova for each regulon against cell types, keep the ones with a good p-value
+# which regulons are the highest in HSCs, which in GMPs, ...
+```
+
+
+
+Do a tSNE.
+```{r}
+# dta_tsne <- dta_heat_1[, 2:ncol(dta_heat_1)]
+# dta.cor <- cor(dta_tsne)
+# 
+# dta.cor.hc <- as.dendrogram(hclust(as.dist(1-dta.cor), method = "average"))
+# plot(dta.cor.hc)
+# 
+# heatmap(dta.cor, Rowv = dta.cor.hc, symm=TRUE, zlim=c(-1, 1), col = dta_heat_1$CellType)
+shapes = list("Healthy" = "20",
+              "Cancer" = "5")
+
+library(Rtsne)
+dta_tsne <- dta_heat_1[, 3:ncol(dta_heat_1)]
+dta_celltype <- dta_heat_1[, 1]
+dta_hc       <- dta_heat_1[, 2]
+
+tsne_results <- Rtsne(dta_tsne, perplexity=30, check_duplicates = FALSE)
+
+tSNE_df <- tsne_results$Y %>% 
+  as.data.frame()
+colnames(tSNE_df) = c("tSNE1", "tSNE2")
+tSNE_df$CellType = dta_celltype
+tSNE_df$HC       = dta_hc
+
+
+colors5 <- c(
+            "HSC-like" = "black",
+            "Prog-like" = "gray65",
+            "GMP-like" = "darkorchid",
+            "ProMono-like" = "orangered2",
+            "Mono-like" = "gold1",
+            "cDC-like" = "green3"
+            )
+tSNE_df[which(str_detect(rownames(dta_tsne), "BM")), ] %>%
+  ggplot(aes(x = tSNE1, 
+             y = tSNE2,
+             color = CellType))+
+  geom_point(size = 0.5)+
+  scale_color_manual(name="Cell Type", values=colors)+
+  #scale_shape_manual(name="Healthy/Cancer", values=shapes)+
+  theme(legend.position="right",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.title = element_blank())
+
+colors4 <- c("HSC/HSC-like" = "black",
+            "Prog/Prog-like" = "gray65",
+            "GMP/GMP-like" = "darkorchid",
+            "ProMono/ProMono-like" = "orangered2",
+            "Mono/Mono-like" = "gold1",
+            "cDC/cDC-like" = "green3",
+            "pDC" = "royalblue",
+            "earlyEry" = "sienna2",
+            "lateEry" = "violetred4",
+            "ProB" = "turquoise3",
+            "B" = "springgreen2",
+            "Plasma" = "seagreen",
+            "T" = "skyblue1",
+            "CTL" = "maroon3",
+            "NK" = "midnightblue"
+            )
+t<-tSNE_df %>%
+  mutate(CellType = gsub('-like', '', CellType)) %>%
+  mutate(CellType = case_when(CellType == 'HSC' ~ 'HSC/HSC-like',
+                              CellType == 'Prog' ~ 'Prog/Prog-like',
+                              CellType == 'GMP' ~ 'GMP/GMP-like',
+                              CellType == 'ProMono' ~ 'ProMono/ProMono-like',
+                              CellType == 'Mono' ~ 'Mono/Mono-like',
+                              CellType == 'cDC' ~ 'cDC/cDC-like',
+                              T ~ CellType))
+tp<-t%>%ggplot(aes(x = tSNE1, 
+             y = tSNE2,
+             color = CellType,
+             shape = HC))+
+  geom_point(size = 0.9)+
+  scale_color_manual(name="Cell Type", values=colors4)+
+  scale_shape_manual(name="Healthy/Cancer", values=list("Healthy" = "20",
+                                                        "Cancer" = "2"))+
+  theme(legend.position='none',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.title = element_blank())
+
+color_plot <-  ggplot(data = t) + 
+  geom_point(aes(x = tSNE1, y = tSNE2, color = CellType)) +
+  theme(legend.position = 'right',
+        legend.title = element_blank()) +
+  scale_color_manual(name="Cell Type", values=colors4)
+color_legend <- cowplot::get_legend(color_plot)
+
+shape_plot <-  ggplot(data = t) + 
+  geom_point(aes(x = tSNE1, y = tSNE2, shape = HC)) +
+  theme(legend.position = 'top',
+        legend.title = element_blank()) +
+  scale_shape_manual(name="Healthy/Cancer", values=list("Healthy" = "20",
+                                                        "Cancer" = "2"))
+shape_legend <- cowplot::get_legend(shape_plot)
+
+cowplot::plot_grid(plotlist = list(tp, color_legend,shape_legend,NULL),
+          rel_heights = c(7, 1),
+          rel_widths =  c(3.8, 1.2))
+
+colors3 <- list("Healthy" = "yellow", "Cancer" = "red")
+tSNE_df %>%
+  filter(HC=='Cancer')%>%
+  ggplot(aes(x = tSNE1, 
+             y = tSNE2,
+             color = CellType))+
+  geom_point(size = 0.7)+
+  scale_color_manual(name="Cell Type", values=colors5)+
+  theme(legend.position="right",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.title = element_blank())
+ggsave("tsne_hc.png")
+```
+
+Figure out which regulons are specific to a certain cell type.
+```{r}
+regulon_differential <- tibble(CellType = levels(dta_heat_3$CellType),
+                               fir_indicator = NA,
+                               sec_indicator = NA,
+                               thi_indicator = NA,
+                               fou_indicator = NA,
+                               fif_indicator = NA,
+                               six_indicator = NA,
+                               sev_indicator = NA,
+                               eig_indicator = NA,
+                               nin_indicator = NA,
+                               ten_indicator = NA)
+regulon_diff_value <- tibble(CellType = levels(dta_heat_3$CellType),
+                               fir_indicator = NA,
+                               sec_indicator = NA,
+                               thi_indicator = NA,
+                               fou_indicator = NA,
+                               fif_indicator = NA,
+                               six_indicator = NA,
+                               sev_indicator = NA,
+                               eig_indicator = NA,
+                               nin_indicator = NA,
+                               ten_indicator = NA)
+
+for (ele in levels(dta_heat_3$CellType)) {
+    df1 <- dta_heat_3[dta_heat_3$CellType == ele, -1]
+    df2 <- dta_heat_3[dta_heat_3$CellType != ele, -1]
+    df_diff <- as.data.frame(colMeans(df1) - colMeans(df2))
+    colnames(df_diff) <- c("diff")
+    df_diff <- df_diff %>%
+        mutate(regulon = rownames(df_diff)) %>%
+        dplyr::select(c("regulon", "diff"))
+    rownames(df_diff) <- 1:dim(df_diff)[1]
+    df_diff_ordered <- df_diff[order(desc(abs(df_diff$diff))), ]
+    regulon_differential[regulon_differential$CellType == ele, 2:11] <- as.list(df_diff_ordered$regulon[1:10])
+    regulon_diff_value[regulon_diff_value$CellType == ele, 2:11] <- as.list(df_diff_ordered$diff[1:10])
+}
+
+regulon_differential
+```
+
+Color cells based on regulon activity.
+```{r}
+color_by_regulon <- function(regulon) {
+    tSNE_df %>%
+    mutate(REGU = dta_heat_1[, regulon]) %>%
+    ggplot(aes(x = tSNE1, 
+               y = tSNE2,
+               color = REGU,))+
+    geom_point(size = 0.7)+
+    scale_color_gradient(low="white", high="red")+
+    theme(legend.position="right",
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          axis.title = element_blank())+
+    labs(color = regulon)
+}
+
+color_by_regulon("CEBPD(+)")
+ggsave("tsne_hc_h1.png")
+color_by_regulon("YBX1(+)")
+ggsave("tsne_hc_h2.png")
+color_by_regulon("E2F2(+)")
+ggsave("tsne_hc_h3.png")
+```
+
+Random Forest analysis.
+```{r}
+trainset <- read_pickle_file("train_set.pkl.gz")
+validationset <- read_pickle_file("validation_set.pkl.gz")
+testset <- read_pickle_file("test_set.pkl.gz")
+trainset$CellType <- factor(trainset$CellType, c("HSC-like", "Prog-like", "GMP-like", "ProMono-like", "Mono-like", "cDC-like"))
+validationset$CellType <- factor(validationset$CellType, c("HSC-like", "Prog-like", "GMP-like", "ProMono-like", "Mono-like", "cDC-like"))
+testset$CellType <- factor(testset$CellType, c("HSC-like", "Prog-like", "GMP-like", "ProMono-like", "Mono-like", "cDC-like"))
+trainset <- trainset %>% dplyr::select(-c("HC"))
+validationset <- validationset %>% dplyr::select(-c("HC"))
+testset <- testset %>% dplyr::select(-c("HC"))
+
+
+library(randomForest)
+library(MASS)
+library(caret)
+library(knitr)
+get_accuracy <- function(fit, testset){
+  pred <- predict(fit, newdata = testset, type = "class")
+  confusionMatrix(table(pred = pred, true = testset$CellType))$overall[1]
+}
+
+set.seed(292876)
+# in_train = sample(1:nrow(dta_heat_1), size = 0.7*nrow(dta_heat_1))
+# trainset = dta_heat_1[in_train, ]
+names(trainset) <- make.names(names(trainset))
+# testset = dta_heat_1[-in_train, ]
+names(validationset) <- make.names(names(validationset))
+names(testset) <- make.names(names(testset))
+
+set.seed(292876); fit <- randomForest(CellType ~ ., data = trainset, ntree = 100, mtry = 60); get_accuracy(fit, trainset); get_accuracy(fit, validationset)
+
+variable_importance <- importance(fit) 
+tmp <- data_frame(feature = str_replace(rownames(variable_importance), "\\.\\.\\.", "(+)"),
+                  Gini = variable_importance[,1]) %>%
+                  arrange(desc(Gini))
+head(tmp, 10)
+```
